@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SVG Spritesheet Demo</title>
+    <title>SVG Spritesheet Demo - Gyro Enhanced</title>
     <style>
         * {
             margin: 0;
@@ -184,6 +184,33 @@
             height: 0;
             background-image: url('SpriteSheet.svg');
         }
+
+        /* Gyro activation prompt */
+        .gyro-prompt {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            background: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 15px 30px;
+            border-radius: 25px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            font-size: 14px;
+            z-index: 1000;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            display: none;
+        }
+
+        .gyro-prompt:hover {
+            background: rgba(0, 0, 0, 0.9);
+            transform: translateX(-50%) scale(1.05);
+        }
+
+        .gyro-prompt.visible {
+            display: block;
+        }
     </style>
 </head>
 
@@ -208,31 +235,128 @@
         <div class="sprite sprite-babbage-machine" data-speed="0.5"></div>
     </section>
 
+    <div class="gyro-prompt" id="gyroPrompt">
+        📱 Tap to enable gyroscope parallax
+    </div>
+
     <script>
-        // Optimized parallax effect
+        // Optimized parallax effect with mouse and gyroscope support
         const heroSection = document.getElementById('heroSection');
         const parallaxElements = document.querySelectorAll('[data-speed]');
+        const gyroPrompt = document.getElementById('gyroPrompt');
         
-        let mouseX = 0;
-        let currentX = 0;
+        let targetX = 0;      // Target position (-1 to 1)
+        let currentX = 0;     // Current position
+        let velocity = 0;     // Velocity for gyro-based acceleration
         let rafId = null;
+        let isGyroActive = false;
+        let gyroPermissionGranted = false;
 
-        // Throttled mouse move handler
+        // Mouse parallax handler
         heroSection.addEventListener('mousemove', (e) => {
-            const rect = heroSection.getBoundingClientRect();
-            // Normalize to -1 to 1 range
-            mouseX = ((e.clientX - rect.left) / rect.width - 0.5) * 2;
+            if (!isGyroActive) {
+                const rect = heroSection.getBoundingClientRect();
+                targetX = ((e.clientX - rect.left) / rect.width - 0.5) * 2;
+            }
         });
 
-        // Reset on mouse leave
         heroSection.addEventListener('mouseleave', () => {
-            mouseX = 0;
+            if (!isGyroActive) {
+                targetX = 0;
+            }
         });
+
+        // Detect if device likely has gyroscope
+        const isMobile = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
+        
+        if (isMobile && window.DeviceOrientationEvent) {
+            // Check if permission is needed (iOS 13+)
+            if (typeof DeviceOrientationEvent.requestPermission === 'function') {
+                gyroPrompt.classList.add('visible');
+                
+                gyroPrompt.addEventListener('click', async () => {
+                    try {
+                        const permission = await DeviceOrientationEvent.requestPermission();
+                        if (permission === 'granted') {
+                            gyroPermissionGranted = true;
+                            initGyro();
+                            gyroPrompt.style.display = 'none';
+                        }
+                    } catch (error) {
+                        console.log('Gyroscope permission denied:', error);
+                        gyroPrompt.textContent = '❌ Gyroscope access denied';
+                        setTimeout(() => {
+                            gyroPrompt.style.display = 'none';
+                        }, 2000);
+                    }
+                });
+            } else {
+                // Non-iOS devices - auto-init
+                initGyro();
+            }
+        }
+
+        function initGyro() {
+            window.addEventListener('deviceorientation', handleOrientation);
+            
+            // Show confirmation on mobile
+            if (isMobile && !gyroPermissionGranted) {
+                gyroPrompt.textContent = '✓ Gyroscope active!';
+                gyroPrompt.classList.add('visible');
+                setTimeout(() => {
+                    gyroPrompt.style.display = 'none';
+                }, 2000);
+            }
+        }
+
+        function handleOrientation(event) {
+            // Use gamma (left-right tilt) for parallax
+            // gamma ranges from -90 to 90 (left to right)
+            const gamma = event.gamma;
+            
+            if (gamma !== null) {
+                isGyroActive = true;
+                
+                // Normalize gamma to acceleration value
+                // Dead zone to prevent jitter when device is held still
+                const deadZone = 5;      // Degrees of no movement
+                const activeRange = 30;  // Degrees for max acceleration
+                
+                let normalizedTilt = 0;
+                
+                if (Math.abs(gamma) > deadZone) {
+                    // Map to -1 to 1, clamping at activeRange degrees
+                    normalizedTilt = Math.max(-1, Math.min(1, 
+                        (gamma - Math.sign(gamma) * deadZone) / activeRange
+                    ));
+                }
+                
+                // Apply acceleration based on tilt
+                // Tilt right → positive acceleration → move right
+                // Tilt left → negative acceleration → move left
+                const acceleration = normalizedTilt * 0.02; // Adjust for sensitivity
+                velocity += acceleration;
+                
+                // Apply friction to prevent infinite acceleration
+                velocity *= 0.95;
+                
+                // Clamp velocity to prevent too-fast movement
+                velocity = Math.max(-0.1, Math.min(0.1, velocity));
+                
+                // Update target position with velocity
+                targetX += velocity;
+                
+                // Clamp target position to bounds
+                targetX = Math.max(-1, Math.min(1, targetX));
+            }
+        }
 
         // Smooth animation loop
         function animate() {
-            // Smooth interpolation
-            currentX += (mouseX - currentX) * 0.05;
+            // Smooth interpolation toward target
+            // Slightly faster smoothing for gyro to feel more responsive
+            const smoothing = isGyroActive ? 0.08 : 0.05;
+            currentX += (targetX - currentX) * smoothing;
 
             parallaxElements.forEach(el => {
                 const speed = parseFloat(el.dataset.speed);
@@ -243,7 +367,9 @@
                 
                 // Apply parallax while preserving other transforms
                 if (currentTransform && currentTransform !== 'none') {
-                    el.style.transform = `translateX(${movement}px) ${currentTransform.replace(/translateX\([^)]+\)\s*/, '')}`;
+                    // Remove any existing translateX and add new one
+                    const withoutTranslateX = currentTransform.replace(/translateX\([^)]+\)\s*/g, '');
+                    el.style.transform = `translateX(${movement}px) ${withoutTranslateX}`;
                 } else {
                     el.style.transform = `translateX(${movement}px)`;
                 }
@@ -258,7 +384,26 @@
         // Cleanup on page unload
         window.addEventListener('beforeunload', () => {
             if (rafId) cancelAnimationFrame(rafId);
+            window.removeEventListener('deviceorientation', handleOrientation);
         });
+
+        // Debug mode (add ?debug to URL to see values)
+        if (window.location.search.includes('debug')) {
+            const debugDiv = document.createElement('div');
+            debugDiv.style.cssText = 'position:fixed;top:10px;left:10px;background:rgba(0,0,0,0.8);color:#0f0;padding:15px;font-family:monospace;z-index:9999;font-size:11px;border-radius:5px;min-width:200px;';
+            document.body.appendChild(debugDiv);
+            
+            setInterval(() => {
+                debugDiv.innerHTML = `
+                    <div style="margin-bottom:8px;color:#fff;font-weight:bold;">Parallax Debug</div>
+                    Gyro: ${isGyroActive ? '<span style="color:#0f0">●</span> Active' : '<span style="color:#f00">●</span> Inactive'}<br>
+                    Target: ${targetX.toFixed(3)}<br>
+                    Current: ${currentX.toFixed(3)}<br>
+                    Velocity: ${velocity.toFixed(4)}<br>
+                    Mobile: ${isMobile ? 'Yes' : 'No'}
+                `;
+            }, 100);
+        }
     </script>
 </body>
 </html>
